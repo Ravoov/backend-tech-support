@@ -41,19 +41,30 @@ function sanitizeComplaint(complaint) {
   return rest;
 }
 
-// --- Email transporter ---
-const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST,
-  port: parseInt(process.env.SMTP_PORT) || 587,
-  secure: process.env.SMTP_SECURE === 'true',
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-  },
-  connectionTimeout: 10000,  // 10s - fail fast if SMTP unreachable
-  greetingTimeout: 10000,   // 10s
-  socketTimeout: 10000,     // 10s
-});
+// --- Email transporter factory ---
+function createTransporter() {
+  const config = {
+    host: process.env.SMTP_HOST,
+    port: parseInt(process.env.SMTP_PORT) || 587,
+    secure: process.env.SMTP_SECURE === 'true',
+    auth: {
+      user: process.env.SMTP_USER,
+      pass: process.env.SMTP_PASS,
+    },
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 10000,
+  };
+
+  // Some providers (like Elastic Email) need this header for sender identity
+  if (process.env.SMTP_FROM_HEADER) {
+    config.from = process.env.SMTP_FROM_HEADER;
+  }
+
+  return nodemailer.createTransport(config);
+}
+
+const transporter = createTransporter();
 
 // --- Health check ---
 app.get('/ping', (req, res) => {
@@ -133,6 +144,8 @@ app.post('/api/complaints/:id/email', async (req, res) => {
   if (!complaint) return res.status(404).json({ error: 'Complaint not found.' });
 
   try {
+    // Use SMTP_FROM_HEADER for envelope sender if set, otherwise FROM_EMAIL
+    const envelopeFrom = process.env.SMTP_FROM_HEADER || `"${process.env.FROM_NAME}" <${process.env.FROM_EMAIL}>`;
     const info = await transporter.sendMail({
       from: `"${process.env.FROM_NAME}" <${process.env.FROM_EMAIL}>`,
       to: complaint.email,
