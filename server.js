@@ -52,6 +52,11 @@ const transporter = nodemailer.createTransport({
   },
 });
 
+// --- Health check ---
+app.get('/ping', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
 // --- Routes ---
 
 // Submit a new complaint
