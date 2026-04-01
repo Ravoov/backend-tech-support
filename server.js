@@ -50,6 +50,9 @@ const transporter = nodemailer.createTransport({
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS,
   },
+  connectionTimeout: 10000,  // 10s - fail fast if SMTP unreachable
+  greetingTimeout: 10000,   // 10s
+  socketTimeout: 10000,     // 10s
 });
 
 // --- Health check ---
