@@ -2,7 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
-const nodemailer = require('nodemailer');
+const { google } = require('googleapis');
 const { v4: uuidv4 } = require('uuid');
 const fs = require('fs');
 const path = require('path');
@@ -41,30 +41,47 @@ function sanitizeComplaint(complaint) {
   return rest;
 }
 
-// --- Email transporter factory ---
-function createTransporter() {
-  const config = {
-    host: process.env.SMTP_HOST,
-    port: parseInt(process.env.SMTP_PORT) || 587,
-    secure: process.env.SMTP_SECURE === 'true',
-    auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASS,
+// --- Gmail API OAuth2 setup ---
+const oauth2Client = new google.auth.OAuth2(
+  process.env.GMAIL_CLIENT_ID,
+  process.env.GMAIL_CLIENT_SECRET,
+  'https://developers.google.com/oauthplayground'  // redirect URI for token exchange
+);
+
+oauth2Client.setCredentials({
+  refresh_token: process.env.GMAIL_REFRESH_TOKEN,
+});
+
+const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+
+// --- Send email via Gmail API ---
+async function sendEmail(to, subject, body) {
+  const fromName = process.env.FROM_NAME || 'Tech Support';
+  const fromEmail = process.env.GMAIL_USER;
+
+  const email_lines = [
+    `To: ${to}`,
+    `From: "${fromName}" <${fromEmail}>`,
+    `Subject: ${subject}`,
+    '',
+    body,
+  ];
+
+  const encodedMessage = Buffer.from(email_lines.join('\r\n'))
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+
+  const result = await gmail.users.messages.send({
+    userId: 'me',
+    requestBody: {
+      raw: encodedMessage,
     },
-    connectionTimeout: 10000,
-    greetingTimeout: 10000,
-    socketTimeout: 10000,
-  };
+  });
 
-  // Some providers (like Elastic Email) need this header for sender identity
-  if (process.env.SMTP_FROM_HEADER) {
-    config.from = process.env.SMTP_FROM_HEADER;
-  }
-
-  return nodemailer.createTransport(config);
+  return result.data;
 }
-
-const transporter = createTransporter();
 
 // --- Health check ---
 app.get('/ping', (req, res) => {
@@ -131,7 +148,7 @@ app.patch('/api/complaints/:id', (req, res) => {
   res.json(sanitizeComplaint(complaints[idx]));
 });
 
-// Send email to complaint submitter (dashboard cannot see email, only triggers send)
+// Send email to complaint submitter
 app.post('/api/complaints/:id/email', async (req, res) => {
   const { subject, body } = req.body;
 
@@ -144,21 +161,14 @@ app.post('/api/complaints/:id/email', async (req, res) => {
   if (!complaint) return res.status(404).json({ error: 'Complaint not found.' });
 
   try {
-    // Use SMTP_FROM_HEADER for envelope sender if set, otherwise FROM_EMAIL
-    const envelopeFrom = process.env.SMTP_FROM_HEADER || `"${process.env.FROM_NAME}" <${process.env.FROM_EMAIL}>`;
-    const info = await transporter.sendMail({
-      from: `"${process.env.FROM_NAME}" <${process.env.FROM_EMAIL}>`,
-      to: complaint.email,
-      subject,
-      text: body,
-    });
+    const result = await sendEmail(complaint.email, subject, body);
 
     // Mark replySent
     const idx = complaints.findIndex(c => c.id === req.params.id);
     complaints[idx].replySent = true;
     writeComplaints(complaints);
 
-    res.json({ success: true, messageId: info.messageId });
+    res.json({ success: true, messageId: result.id });
   } catch (err) {
     console.error('Email error:', err);
     res.status(500).json({ error: 'Failed to send email.' });
